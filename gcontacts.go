@@ -3,29 +3,28 @@ package main
 import (
     "log"
     "fmt"
+    "os"
+    "os/exec"
+    "os/user"
+    "time"
     "net/url"
     "net/http"
     "io"
     "io/ioutil"
-    "os"
-    "os/exec"
-    "os/user"
     "encoding/json"
     "path/filepath"
 )
 
-func get_token(account string) (string, error) {
+func get_token(account string) string {
     auth_url := "https://accounts.google.com/o/oauth2/auth?" + url.Values{
         "response_type": {"token"},
-        "client_id": {"175384822318-g58vh7hdbla895f1b869ed4h3apu5bb1.apps.googleusercontent.com"},
+        "client_id": {"763998006187-v0be2qs7s59f5s948mbtvs4cs3sfbn12.apps.googleusercontent.com"},
         "redirect_uri": {"http://localhost:8888/oauth2callback"},
-        "scope": {"https://www.googleapis.com/auth/contacts.readonly email https://www.googleapis.com/auth/admin.directory.user.readonly"},
+        "scope": {"https://www.googleapis.com/auth/contacts.readonly email"},
         "login_hint": {account},
     }.Encode()
 
     var token string
-    var rerr error
-
     done := make(chan bool)
 
     http.HandleFunc("/oauth2callback", func (w http.ResponseWriter, req *http.Request) {
@@ -35,6 +34,7 @@ func get_token(account string) (string, error) {
     })
 
     http.HandleFunc("/token", func (w http.ResponseWriter, req *http.Request) {
+        fmt.Println(req.URL)
         io.WriteString(w, "Done!\n")
         token = req.URL.Query().Get("access_token")
         done <- true
@@ -46,23 +46,26 @@ func get_token(account string) (string, error) {
     fmt.Fprintln(os.Stderr, "Firefox started")
 
     <-done
-    return token, rerr
+    return token
 }
 
-func gcall(api_url string, token string) ([]byte, error) {
+func gcall(api_url string, token string) []byte {
     resp, err := http.Get(api_url + "access_token=" + token)
     if err != nil {
-        return nil, err
+        panic(err)
     }
+
     defer resp.Body.Close()
-    return ioutil.ReadAll(resp.Body)
+    body, err := ioutil.ReadAll(resp.Body)
+    if err != nil {
+        panic(err)
+    }
+    return body
 }
 
-func verify_email(account string, token string) (bool, error) {
-    body, err := gcall("https://www.googleapis.com/plus/v1/people/me?", token)
-    if err != nil {
-        return false, err
-    }
+func valid_email(account string, token string) bool {
+    body := gcall("https://www.googleapis.com/plus/v1/people/me?", token)
+
     var res struct {
         Emails []struct {
             Value string
@@ -70,23 +73,23 @@ func verify_email(account string, token string) (bool, error) {
         }
     }
     if err := json.Unmarshal(body, &res); err != nil {
-        return false, err
+        panic(err)
     }
 
     for _, email := range res.Emails {
         if account == email.Value {
-            return true, nil
+            return true
         }
     }
 
     fmt.Println(string(body))
-    return false, nil
+    return false
 }
 
-func get_cached_token(account string) (string, error) {
+func get_cached_token(account string) string {
     usr, err := user.Current()
     if err != nil {
-        return "", err
+        panic(err)
     }
 
     cache_dir := filepath.Join(usr.HomeDir, ".cache", "gcontacts")
@@ -95,34 +98,48 @@ func get_cached_token(account string) (string, error) {
     token, err := ioutil.ReadFile(token_fname)
     if err != nil {
         if os.IsNotExist(err) {
-            stoken, err := get_token(account)
-            if err == nil {
-                os.MkdirAll(cache_dir, 0777)
-                if err := ioutil.WriteFile(token_fname, []byte(stoken), 0777); err != nil {
-                    return "", err
-                }
-                return stoken, err
+            stoken := get_token(account)
+            os.MkdirAll(cache_dir, 0777)
+            if err := ioutil.WriteFile(token_fname, []byte(stoken), 0600); err != nil {
+                panic(err)
             }
+            return stoken
+        } else {
+            panic(err)
         }
     }
-    return string(token), err
+
+    info, err := os.Stat(token_fname)
+    if err != nil {
+        panic(err)
+    }
+    if info.ModTime().Before(time.Now().Add(-50 * time.Minute)) {
+        stoken := get_token(account)
+        if err := ioutil.WriteFile(token_fname, []byte(stoken), 0600); err != nil {
+            panic(err)
+        }
+        return stoken
+    }
+
+    return string(token)
 }
 
 func main() {
-    account := os.Args[1]
-    token, err := get_cached_token(account)
-    if err != nil {
-        log.Fatal(err)
-    }
+    defer func() {
+        if err := recover(); err != nil {
+            log.Fatal(err)
+        }
+    }()
 
-    valid, err := verify_email(account, token)
-    if err != nil {
-        log.Fatal(err)
-    }
-    if !valid {
+    account := os.Args[1]
+    token := get_cached_token(account)
+
+    if !valid_email(account, token) {
         log.Fatalf("Invalid email %s for token", account)
     }
 
-    body, _ := gcall("https://www.googleapis.com/admin/directory/v1/users?domain=dreamindustries.co&", token)
+    // body, _ := gcall("https://www.googleapis.com/admin/directory/v1/users?domain=dreamindustries.co&", token)
+    // body, _ := gcall("https://www.google.com/m8/feeds/groups/default/full/27?alt=json&", token)
+    body := gcall("https://www.google.com/m8/feeds/contacts/default/full?alt=json&", token)
     fmt.Println(string(body))
 }
