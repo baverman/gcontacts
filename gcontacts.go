@@ -95,15 +95,19 @@ func get_cached_token(account string) string {
     cache_dir := filepath.Join(usr.HomeDir, ".cache", "gcontacts")
     token_fname := filepath.Join(cache_dir, account)
 
+    get_and_write_token := func () string {
+        stoken := get_token(account)
+        os.MkdirAll(cache_dir, 0777)
+        if err := ioutil.WriteFile(token_fname, []byte(stoken), 0600); err != nil {
+            panic(err)
+        }
+        return stoken
+    }
+
     token, err := ioutil.ReadFile(token_fname)
     if err != nil {
         if os.IsNotExist(err) {
-            stoken := get_token(account)
-            os.MkdirAll(cache_dir, 0777)
-            if err := ioutil.WriteFile(token_fname, []byte(stoken), 0600); err != nil {
-                panic(err)
-            }
-            return stoken
+            return get_and_write_token()
         } else {
             panic(err)
         }
@@ -114,11 +118,7 @@ func get_cached_token(account string) string {
         panic(err)
     }
     if info.ModTime().Before(time.Now().Add(-50 * time.Minute)) {
-        stoken := get_token(account)
-        if err := ioutil.WriteFile(token_fname, []byte(stoken), 0600); err != nil {
-            panic(err)
-        }
-        return stoken
+        return get_and_write_token()
     }
 
     return string(token)
@@ -138,8 +138,6 @@ func main() {
         log.Fatalf("Invalid email %s for token", account)
     }
 
-    // body, _ := gcall("https://www.googleapis.com/admin/directory/v1/users?domain=dreamindustries.co&", token)
-    // body, _ := gcall("https://www.google.com/m8/feeds/groups/default/full/27?alt=json&", token)
-    body := gcall("https://www.google.com/m8/feeds/contacts/default/full?alt=json&", token)
-    fmt.Println(string(body))
+    // body := gcall("https://www.google.com/m8/feeds/contacts/default/full?alt=json&", token)
+    // fmt.Println(string(body))
 }
